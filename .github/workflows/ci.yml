@@ -9,6 +9,12 @@ jobs:
       SIMCTL_CHILD_OS_ACTIVITY_DT_MODE: "YES"  # mirror NSLog to stderr so simctl --console sees PASSED markers
     steps:
       - uses: actions/checkout@v4
+      - name: Select newest Xcode
+        run: |
+          ls -d /Applications/Xcode*.app
+          NEW=$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)
+          sudo xcode-select -s "$NEW" && echo "Selected $NEW"
+          xcrun simctl list runtimes
       - name: Toolchain
         run: xcodebuild -version && xcrun --sdk iphoneos --show-sdk-version && python3 --version
       - name: Compile module (official script, no app input or signing)
