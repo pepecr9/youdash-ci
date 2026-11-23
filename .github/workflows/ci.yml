@@ -5,6 +5,8 @@ permissions:
 jobs:
   build-test:
     runs-on: macos-latest
+    env:
+      SIMCTL_CHILD_OS_ACTIVITY_DT_MODE: "YES"  # mirror NSLog to stderr so simctl --console sees PASSED markers
     steps:
       - uses: actions/checkout@v4
       - name: Toolchain
@@ -25,10 +27,20 @@ jobs:
           echo "UDID=$UDID" >> "$GITHUB_ENV"
           xcrun simctl boot "$UDID" && xcrun simctl bootstatus "$UDID" -b
       - name: Native surface harness
+        continue-on-error: true
+        id: surface
         run: python3 tests/run_native_surface.py "$UDID"
       - name: Watch layout harness
+        continue-on-error: true
+        id: watch
         run: python3 tests/run_watch_layout.py "$UDID"
+      - name: Simulator log on harness failure
+        if: steps.surface.outcome == 'failure' || steps.watch.outcome == 'failure'
+        run: xcrun simctl spawn "$UDID" log show --last 10m --style compact --predicate 'process == "SurfaceTests"' | tail -80
+      - name: Harness verdict
+        run: test "${{ steps.surface.outcome }}" = success && test "${{ steps.watch.outcome }}" = success
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: YouTubeCarPlay-module-unsigned
           path: build/YouTubeCarPlay.dylib
