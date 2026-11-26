@@ -69,7 +69,7 @@ jobs:
         with:
           name: YouDash-synthetic-unsigned
           path: dist/*.ipa
-      - name: Encrypt real IPA (public repo: never upload plaintext Google binaries)
+      - name: Encrypt real IPA - public repo, never upload plaintext Google binaries
         if: inputs.mode == 'real'
         env:
           PASS: ${{ secrets.OUTPUT_PASSPHRASE }}
