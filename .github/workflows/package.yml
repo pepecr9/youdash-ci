@@ -1,0 +1,86 @@
+name: YouDash package (unsigned IPA)
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "synthetic = dry run with a fake app; real = secret YOUTUBE_IPA_URL (output encrypted)"
+        default: synthetic
+        type: choice
+        options: [synthetic, real]
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: |
+          python3 -m venv .venv && . .venv/bin/activate
+          python3 -m pip install -q -r requirements-build.txt
+          python3 -m cyan --help >/dev/null && echo "cyan OK"
+      - name: Synthetic input (no proprietary code)
+        if: inputs.mode == 'synthetic'
+        run: |
+          set -e
+          A=.local/in/Payload/YouTube.app; mkdir -p "$A"
+          echo 'int main(void){return 0;}' > .local/main.c
+          xcrun clang -target arm64-apple-ios17.0 -isysroot "$(xcrun --sdk iphoneos --show-sdk-path)" .local/main.c -o "$A/YouTube"
+          python3 - <<'EOF'
+          import plistlib
+          plistlib.dump({"CFBundleExecutable": "YouTube", "CFBundleIdentifier": "com.example.synthetic.youtube",
+              "CFBundleShortVersionString": "21.42.4", "CFBundleVersion": "21.42.4", "CFBundlePackageType": "APPL",
+              "MinimumOSVersion": "17.0", "UIBackgroundModes": ["audio", "fetch", "remote-notification"],
+              "BGTaskSchedulerPermittedIdentifiers": ["x"],
+              "UIApplicationSceneManifest": {"UIApplicationSupportsMultipleScenes": False, "UISceneConfigurations": {
+                  "UIWindowSceneSessionRoleApplication": [{"UISceneConfigurationName": "Default", "UISceneDelegateClassName": "YTSceneDelegate"}]}}},
+              open(".local/in/Payload/YouTube.app/Info.plist", "wb"))
+          EOF
+          (cd .local/in && zip -qr ../input.ipa Payload)
+      - name: Real input (private URL from secret, never stored)
+        if: inputs.mode == 'real'
+        env:
+          URL: ${{ secrets.YOUTUBE_IPA_URL }}
+        run: |
+          test -n "$URL" || { echo "Secret YOUTUBE_IPA_URL missing"; exit 1; }
+          mkdir -p .local && curl -fsSL "$URL" -o .local/input.ipa
+          shasum -a 256 .local/input.ipa
+      - name: Package with official script (--unsigned)
+        run: |
+          . .venv/bin/activate
+          export SDKROOT="$(xcrun --sdk iphoneos --show-sdk-path)"
+          python3 scripts/build_carplay.py --ipa .local/input.ipa --unsigned --bundle-id com.pepecr9.youdash --reported-version 21.45.4
+          shasum -a 256 build/YouTubeCarPlay.dylib dist/*.ipa
+          cat dist/build-manifest.json
+      - name: Verify output
+        run: |
+          set -e
+          IPA=$(ls dist/*.ipa); rm -rf .local/check; mkdir -p .local/check && unzip -q "$IPA" -d .local/check
+          APP=.local/check/Payload/YouTube.app
+          plutil -p "$APP/Info.plist" | grep -E 'CFBundleIdentifier|CFBundleDisplayName|ShortVersion|YCPActual|CarPlay|ExternalDisplay|audio'
+          xcrun otool -L "$APP/YouTube" | grep YouTubeCarPlay
+          test -f "$APP/Frameworks/YouTubeCarPlay.dylib"
+          ! codesign -d "$APP" 2>/dev/null || { echo "app still signed"; exit 1; }
+          test -z "$(find "$APP" -name '*.mobileprovision' -o -name _CodeSignature)"
+          echo "VERIFY_OK"
+      - name: Upload synthetic IPA
+        if: inputs.mode == 'synthetic'
+        uses: actions/upload-artifact@v4
+        with:
+          name: YouDash-synthetic-unsigned
+          path: dist/*.ipa
+      - name: Encrypt real IPA (public repo: never upload plaintext Google binaries)
+        if: inputs.mode == 'real'
+        env:
+          PASS: ${{ secrets.OUTPUT_PASSPHRASE }}
+        run: |
+          test -n "$PASS" || { echo "Secret OUTPUT_PASSPHRASE missing"; exit 1; }
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -in dist/*.ipa -out YouDash-unsigned.ipa.enc -pass env:PASS
+          rm -rf dist .local
+      - name: Upload encrypted IPA
+        if: inputs.mode == 'real'
+        uses: actions/upload-artifact@v4
+        with:
+          name: YouDash-unsigned-encrypted
+          path: YouDash-unsigned.ipa.enc
+          retention-days: 1
